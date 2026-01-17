@@ -11,6 +11,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from cluster_metrics import binary_accuracy, hungarian_match_accuracy
 from data_io import discover_samples
 from features import build_feature_matrix, build_orb_codebook
 
@@ -26,30 +27,33 @@ BOVW_NUM_WORDS = 64
 BOVW_MAX_FEATURES = 500
 BOVW_MAX_DESCRIPTORS = 10_000
 
+CLUSTER_PCA_COMPONENTS = 20
+PCA_WHITEN = False
+POST_PCA_STANDARDIZE = True
+HEALTHY_LABELS = {"Healthy_Nail"}
+
 DEFAULT_AHC = {
     "n_clusters": 6,
     "linkage": "ward",
     "metric": "euclidean",
     "bins": BINS,
+    "pca_components": CLUSTER_PCA_COMPONENTS,
 }
 GRID_SEARCH = {
     "bins": [16, 32, 64],
     "n_clusters": [4, 6, 8, 10],
     "linkage": ["ward", "average", "complete"],
     "metric": ["euclidean", "cosine"],
+    "pca_components": [CLUSTER_PCA_COMPONENTS],
 }
 RUN_GRID_SEARCH = True
 
-CLUSTER_PCA_COMPONENTS = 20
-PCA_WHITEN = False
-POST_PCA_STANDARDIZE = True
 
-
-def iter_ahc_configs(feature_set: str) -> list[dict[str, int | str]]:
+def iter_ahc_configs(feature_set: str) -> list[dict[str, int | str | None]]:
     if not RUN_GRID_SEARCH:
         return [DEFAULT_AHC]
 
-    configs: list[dict[str, int | str]] = []
+    configs: list[dict[str, int | str | None]] = []
     bins_values = GRID_SEARCH["bins"] if feature_set == "set1" else [BINS]
     for bins in bins_values:
         for n_clusters in GRID_SEARCH["n_clusters"]:
@@ -57,14 +61,16 @@ def iter_ahc_configs(feature_set: str) -> list[dict[str, int | str]]:
                 for metric in GRID_SEARCH["metric"]:
                     if linkage == "ward" and metric != "euclidean":
                         continue
-                    configs.append(
-                        {
-                            "bins": bins,
-                            "n_clusters": n_clusters,
-                            "linkage": linkage,
-                            "metric": metric,
-                        }
-                    )
+                    for pca_components in GRID_SEARCH["pca_components"]:
+                        configs.append(
+                            {
+                                "bins": bins,
+                                "n_clusters": n_clusters,
+                                "linkage": linkage,
+                                "metric": metric,
+                                "pca_components": pca_components,
+                            }
+                        )
     return configs
 
 
@@ -72,6 +78,12 @@ def feature_tag(bins: int, feature_set: str) -> str:
     if feature_set == "set1":
         return f"bins{bins}"
     return feature_set
+
+
+def pca_tag(components: int | None) -> str:
+    if components is None:
+        return "pcaNone"
+    return f"pca{components}"
 
 
 def cluster_entropy(class_counts: Counter[str]) -> float:
@@ -144,13 +156,13 @@ def plot_clusters(x_2d: np.ndarray, labels: np.ndarray, output_path: Path) -> No
     plt.close(fig)
 
 
-def reduce_for_clustering(features_scaled: np.ndarray) -> np.ndarray:
-    if CLUSTER_PCA_COMPONENTS is None:
+def reduce_for_clustering(features_scaled: np.ndarray, components: int | None) -> np.ndarray:
+    if components is None or components <= 0:
         return features_scaled
-    if CLUSTER_PCA_COMPONENTS >= features_scaled.shape[1]:
+    if components >= features_scaled.shape[1]:
         return features_scaled
     pca = PCA(
-        n_components=CLUSTER_PCA_COMPONENTS,
+        n_components=components,
         whiten=PCA_WHITEN,
         random_state=42,
     )
@@ -192,10 +204,13 @@ def main() -> None:
 
     configs = iter_ahc_configs(feature_set)
     bins_values = sorted({int(config["bins"]) for config in configs})
-    features_cache: dict[int, tuple[np.ndarray, np.ndarray, list[str]]] = {}
+    features_cache: dict[tuple[int, int | None], tuple[np.ndarray, np.ndarray, list[str]]] = {}
 
-    def get_features_for_bins(bins: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
-        cached = features_cache.get(bins)
+    def get_features_for_bins(
+        bins: int, pca_components: int | None
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        cache_key = (bins, pca_components)
+        cached = features_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -228,7 +243,7 @@ def main() -> None:
 
         scaler = StandardScaler()
         features_scaled = scaler.fit_transform(features)
-        features_cluster = reduce_for_clustering(features_scaled)
+        features_cluster = reduce_for_clustering(features_scaled, pca_components)
         if POST_PCA_STANDARDIZE and features_cluster.size:
             features_cluster = StandardScaler().fit_transform(features_cluster)
 
@@ -237,22 +252,23 @@ def main() -> None:
         else:
             x_2d = np.column_stack([features_cluster[:, 0], np.zeros(len(features_cluster))])
 
-        features_cache[bins] = (features_cluster, x_2d, labels)
+        features_cache[cache_key] = (features_cluster, x_2d, labels)
         return features_cluster, x_2d, labels
 
     if feature_set == "set1":
         results_path = output_dir / f"ahc_{SPLIT}_summary.csv"
     else:
         results_path = output_dir / f"ahc_{SPLIT}_{feature_set}_summary.csv"
-    rows = ["bins,n_clusters,linkage,metric,clusters\n"]
+    rows = ["bins,pca_components,n_clusters,linkage,metric,clusters,accuracy,accuracy_binary\n"]
 
     for config in configs:
         bins = int(config["bins"])
+        pca_components = config.get("pca_components", CLUSTER_PCA_COMPONENTS)
         n_clusters = int(config["n_clusters"])
         linkage = str(config["linkage"])
         metric = str(config["metric"])
 
-        features_cluster, x_2d, labels = get_features_for_bins(bins)
+        features_cluster, x_2d, labels = get_features_for_bins(bins, pca_components)
         if n_clusters > len(features_cluster):
             print(
                 f"Skipping n_clusters={n_clusters} because only {len(features_cluster)} samples are available."
@@ -267,18 +283,21 @@ def main() -> None:
         cluster_labels = model.fit_predict(features_cluster)
 
         output_path = output_dir / (
-            f"ahc_{SPLIT}_{feature_tag(bins, feature_set)}_n{n_clusters}_link{linkage}_{metric}_pca.png"
+            f"ahc_{SPLIT}_{feature_tag(bins, feature_set)}_{pca_tag(pca_components)}_n{n_clusters}_link{linkage}_{metric}_pca.png"
         )
         plot_clusters(x_2d, cluster_labels, output_path)
 
         cluster_count = len(np.unique(cluster_labels))
+        accuracy = hungarian_match_accuracy(labels, cluster_labels)
+        accuracy_binary = binary_accuracy(labels, cluster_labels, HEALTHY_LABELS)
         rows.append(
-            f"{bins},{n_clusters},{linkage},{metric},{cluster_count}\n"
+            f"{bins},{pca_components},{n_clusters},{linkage},{metric},{cluster_count},"
+            f"{accuracy:.4f},{accuracy_binary:.4f}\n"
         )
         print(f"Saved plot to {output_path}")
 
         report_path = output_dir / (
-            f"ahc_{SPLIT}_{feature_tag(bins, feature_set)}_n{n_clusters}_link{linkage}_{metric}_clusters.csv"
+            f"ahc_{SPLIT}_{feature_tag(bins, feature_set)}_{pca_tag(pca_components)}_n{n_clusters}_link{linkage}_{metric}_clusters.csv"
         )
         report_rows = build_cluster_report(labels, cluster_labels)
         report_path.write_text("".join(report_rows), encoding="utf-8")

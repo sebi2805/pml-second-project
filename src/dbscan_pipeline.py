@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
+from cluster_metrics import binary_match_counts, hungarian_match_counts
 from data_io import discover_samples
 from features import build_feature_matrix, build_orb_codebook
 
@@ -27,24 +28,26 @@ BOVW_NUM_WORDS = 64
 BOVW_MAX_FEATURES = 500
 BOVW_MAX_DESCRIPTORS = 10_000
 
+CLUSTER_PCA_COMPONENTS = 20
+PCA_WHITEN = False
+POST_PCA_STANDARDIZE = True
+K_DISTANCE_PLOT = True
+HEALTHY_LABELS = {"Healthy_Nail"}
+
 DEFAULT_DBSCAN = {"eps": 0.6, "min_samples": 5, "metric": "euclidean", "bins": BINS}
 GRID_SEARCH = {
     "bins": [16, 32, 64],
     "eps": np.linspace(0.5, 6, 10),
     "min_samples": [3, 5, 8, 12],
     "metric": ["euclidean"],
+    "pca_components": [CLUSTER_PCA_COMPONENTS],
 }
 RUN_GRID_SEARCH = True
 
-CLUSTER_PCA_COMPONENTS = 20
-PCA_WHITEN = False
-POST_PCA_STANDARDIZE = True
-K_DISTANCE_PLOT = True
 
-
-def iter_dbscan_configs(feature_set: str) -> list[dict[str, float | int | str]]:
+def iter_dbscan_configs(feature_set: str) -> list[dict[str, float | int | str | None]]:
     if not RUN_GRID_SEARCH:
-        return [DEFAULT_DBSCAN]
+        return [{**DEFAULT_DBSCAN, "pca_components": CLUSTER_PCA_COMPONENTS}]
 
     configs = []
     bins_values = GRID_SEARCH["bins"] if feature_set == "set1" else [BINS]
@@ -52,14 +55,16 @@ def iter_dbscan_configs(feature_set: str) -> list[dict[str, float | int | str]]:
         for eps in GRID_SEARCH["eps"]:
             for min_samples in GRID_SEARCH["min_samples"]:
                 for metric in GRID_SEARCH["metric"]:
-                    configs.append(
-                        {
-                            "bins": bins,
-                            "eps": eps,
-                            "min_samples": min_samples,
-                            "metric": metric,
-                        }
-                    )
+                    for pca_components in GRID_SEARCH["pca_components"]:
+                        configs.append(
+                            {
+                                "bins": bins,
+                                "eps": eps,
+                                "min_samples": min_samples,
+                                "metric": metric,
+                                "pca_components": pca_components,
+                            }
+                        )
     return configs
 
 
@@ -67,6 +72,12 @@ def feature_tag(bins: int, feature_set: str) -> str:
     if feature_set == "set1":
         return f"bins{bins}"
     return feature_set
+
+
+def pca_tag(components: int | None) -> str:
+    if components is None:
+        return "pcaNone"
+    return f"pca{components}"
 
 
 def summarize_labels(labels: np.ndarray) -> tuple[int, int]:
@@ -119,13 +130,13 @@ def plot_k_distance(features: np.ndarray, k: int, output_path: Path) -> None:
     plt.close(fig)
 
 
-def reduce_for_clustering(features_scaled: np.ndarray) -> np.ndarray:
-    if CLUSTER_PCA_COMPONENTS is None:
+def reduce_for_clustering(features_scaled: np.ndarray, components: int | None) -> np.ndarray:
+    if components is None or components <= 0:
         return features_scaled
-    if CLUSTER_PCA_COMPONENTS >= features_scaled.shape[1]:
+    if components >= features_scaled.shape[1]:
         return features_scaled
     pca = PCA(
-        n_components=CLUSTER_PCA_COMPONENTS,
+        n_components=components,
         whiten=PCA_WHITEN,
         random_state=42,
     )
@@ -207,10 +218,13 @@ def main() -> None:
 
     configs = iter_dbscan_configs(feature_set)
     bins_values = sorted({int(config["bins"]) for config in configs})
-    features_cache: dict[int, tuple[np.ndarray, np.ndarray, list[str]]] = {}
+    features_cache: dict[tuple[int, int | None], tuple[np.ndarray, np.ndarray, list[str]]] = {}
 
-    def get_features_for_bins(bins: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
-        cached = features_cache.get(bins)
+    def get_features_for_bins(
+        bins: int, pca_components: int | None
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        cache_key = (bins, pca_components)
+        cached = features_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -239,7 +253,7 @@ def main() -> None:
             raise ValueError(f"Unknown FEATURE_SET: {feature_set}")
         scaler = StandardScaler()
         features_scaled = scaler.fit_transform(features)
-        features_cluster = reduce_for_clustering(features_scaled)
+        features_cluster = reduce_for_clustering(features_scaled, pca_components)
         if POST_PCA_STANDARDIZE and features_cluster.size:
             features_cluster = StandardScaler().fit_transform(features_cluster)
 
@@ -248,7 +262,7 @@ def main() -> None:
         else:
             x_2d = np.column_stack([features_cluster[:, 0], np.zeros(len(features_cluster))])
 
-        features_cache[bins] = (features_cluster, x_2d, labels)
+        features_cache[cache_key] = (features_cluster, x_2d, labels)
         return features_cluster, x_2d, labels
 
     if K_DISTANCE_PLOT:
@@ -256,22 +270,32 @@ def main() -> None:
             k = int(min(GRID_SEARCH["min_samples"]))
         else:
             k = int(DEFAULT_DBSCAN["min_samples"])
+        pca_values = sorted(
+            {config.get("pca_components") for config in configs},
+            key=lambda value: (value is None, value if value is not None else -1),
+        )
         for bins in bins_values:
-            features_cluster, _, _ = get_features_for_bins(bins)
-            kdist_path = output_dir / (
-                f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_kdistance_k{k}.png"
-            )
-            plot_k_distance(features_cluster, k, kdist_path)
+            for pca_components in pca_values:
+                features_cluster, _, _ = get_features_for_bins(bins, pca_components)
+                kdist_path = output_dir / (
+                    f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_{pca_tag(pca_components)}_kdistance_k{k}.png"
+                )
+                plot_k_distance(features_cluster, k, kdist_path)
 
     if feature_set == "set1":
         results_path = output_dir / f"dbscan_{SPLIT}_summary.csv"
     else:
         results_path = output_dir / f"dbscan_{SPLIT}_{feature_set}_summary.csv"
-    rows = ["bins,eps,min_samples,metric,clusters,noise,noise_ratio\n"]
+    rows = [
+        "bins,pca_components,eps,min_samples,metric,clusters,noise,noise_ratio,"
+        "accuracy_clustered,coverage,accuracy_overall,"
+        "accuracy_binary_clustered,accuracy_binary_overall\n"
+    ]
 
     for config in configs:
         bins = int(config["bins"])
-        features_cluster, x_2d, labels = get_features_for_bins(bins)
+        pca_components = config.get("pca_components", CLUSTER_PCA_COMPONENTS)
+        features_cluster, x_2d, labels = get_features_for_bins(bins, pca_components)
         dbscan = DBSCAN(
             eps=float(config["eps"]),
             min_samples=int(config["min_samples"]),
@@ -283,19 +307,40 @@ def main() -> None:
         min_samples = config["min_samples"]
         metric = config["metric"]
         output_path = output_dir / (
-            f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_eps{eps}_min{min_samples}_{metric}_pca.png"
+            f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_{pca_tag(pca_components)}_eps{eps}_min{min_samples}_{metric}_pca.png"
         )
         plot_clusters(x_2d, cluster_labels, output_path)
 
         cluster_count, noise_count = summarize_labels(cluster_labels)
-        noise_ratio = noise_count / len(cluster_labels)
+        total_samples = len(cluster_labels)
+        noise_ratio = noise_count / total_samples if total_samples else 0.0
+        clustered_mask = cluster_labels != -1
+        clustered_count = int(np.sum(clustered_mask))
+        coverage = clustered_count / total_samples if total_samples else 0.0
+        if clustered_count:
+            labels_array = np.asarray(labels)
+            clustered_true = labels_array[clustered_mask]
+            clustered_pred = cluster_labels[clustered_mask]
+            correct_clustered, _ = hungarian_match_counts(clustered_true, clustered_pred)
+            accuracy_clustered = correct_clustered / clustered_count
+            accuracy_overall = correct_clustered / total_samples if total_samples else 0.0
+            correct_binary, _ = binary_match_counts(clustered_true, clustered_pred, HEALTHY_LABELS)
+            accuracy_binary_clustered = correct_binary / clustered_count
+            accuracy_binary_overall = correct_binary / total_samples if total_samples else 0.0
+        else:
+            accuracy_clustered = 0.0
+            accuracy_overall = 0.0
+            accuracy_binary_clustered = 0.0
+            accuracy_binary_overall = 0.0
         rows.append(
-            f"{bins},{eps},{min_samples},{metric},{cluster_count},{noise_count},{noise_ratio:.4f}\n"
+            f"{bins},{pca_components},{eps},{min_samples},{metric},{cluster_count},{noise_count},"
+            f"{noise_ratio:.4f},{accuracy_clustered:.4f},{coverage:.4f},{accuracy_overall:.4f},"
+            f"{accuracy_binary_clustered:.4f},{accuracy_binary_overall:.4f}\n"
         )
         print(f"Saved plot to {output_path}")
 
         report_path = output_dir / (
-            f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_eps{eps}_min{min_samples}_{metric}_clusters.csv"
+            f"dbscan_{SPLIT}_{feature_tag(bins, feature_set)}_{pca_tag(pca_components)}_eps{eps}_min{min_samples}_{metric}_clusters.csv"
         )
         report_rows = build_cluster_report(labels, cluster_labels)
         report_path.write_text("".join(report_rows), encoding="utf-8")
