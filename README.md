@@ -72,3 +72,8 @@ Each subfolder contains images related to the specific nail condition.
 - Build a codebook with KMeans on descriptors (train set only).
 - Represent each image by a histogram of visual words.
 - Rationale: captures local patterns (spots, pits, irregularities) differently than global HOG.
+
+### Feature Set 4: Local Binary Pattern (LBP)
+- Compute LBP on grayscale images (uniform patterns).
+- Build a normalized histogram of LBP codes.
+- Rationale: captures local texture changes and surface irregularities.

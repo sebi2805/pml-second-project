@@ -81,6 +81,64 @@ def _hungarian_max_sum(matrix: np.ndarray) -> int:
     return int(total)
 
 
+def _hungarian_max_assignment(matrix: np.ndarray) -> list[int]:
+    if matrix.size == 0:
+        return []
+    n_rows, n_cols = matrix.shape
+    size = max(n_rows, n_cols)
+    padded = np.zeros((size, size), dtype=float)
+    padded[:n_rows, :n_cols] = matrix
+
+    max_value = float(np.max(padded)) if padded.size else 0.0
+    cost = max_value - padded
+    assignment = _hungarian_minimize(cost)
+
+    mapped = []
+    for i in range(n_rows):
+        j = assignment[i]
+        if j is None or j < 0 or j >= n_cols:
+            mapped.append(-1)
+        else:
+            mapped.append(j)
+    return mapped
+
+
+def hungarian_match_mapping(
+    labels_true: Sequence[str] | Iterable[str],
+    labels_pred: Sequence[int] | Iterable[int],
+) -> dict[int, str]:
+    y_true = list(labels_true)
+    y_pred = list(labels_pred)
+    if len(y_true) != len(y_pred):
+        raise ValueError("labels_true and labels_pred must be the same length.")
+    if not y_true:
+        return {}
+
+    true_labels = sorted(set(y_true))
+    pred_labels = sorted(set(y_pred))
+    true_index = {label: idx for idx, label in enumerate(true_labels)}
+    pred_index = {label: idx for idx, label in enumerate(pred_labels)}
+
+    matrix = np.zeros((len(pred_labels), len(true_labels)), dtype=int)
+    for true_label, pred_label in zip(y_true, y_pred, strict=False):
+        matrix[pred_index[pred_label], true_index[true_label]] += 1
+
+    assignment = _hungarian_max_assignment(matrix)
+    mapping: dict[int, str] = {}
+    for pred_label, col_idx in zip(pred_labels, assignment, strict=False):
+        if 0 <= col_idx < len(true_labels):
+            mapping[int(pred_label)] = true_labels[col_idx]
+    return mapping
+
+
+def apply_label_mapping(
+    labels_pred: Sequence[int] | Iterable[int],
+    mapping: dict[int, str],
+    fallback_label: str = "__unassigned__",
+) -> list[str]:
+    return [mapping.get(int(label), fallback_label) for label in labels_pred]
+
+
 def hungarian_match_counts(
     labels_true: Sequence[str] | Iterable[str],
     labels_pred: Sequence[int] | Iterable[int],
@@ -113,6 +171,15 @@ def hungarian_match_accuracy(
     if total == 0:
         return 0.0
     return correct / total
+
+
+def hungarian_match_predict(
+    labels_true: Sequence[str] | Iterable[str],
+    labels_pred: Sequence[int] | Iterable[int],
+    fallback_label: str = "__unassigned__",
+) -> list[str]:
+    mapping = hungarian_match_mapping(labels_true, labels_pred)
+    return apply_label_mapping(labels_pred, mapping, fallback_label=fallback_label)
 
 
 def binary_match_counts(

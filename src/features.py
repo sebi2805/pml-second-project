@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import pairwise_distances_argmin
+from skimage.feature import local_binary_pattern
 
 from data_io import ImageSample, load_image
 
@@ -80,6 +81,30 @@ def extract_feature_set_2(
         return np.empty((0,), dtype=np.float32)
 
     return descriptors.reshape(-1).astype(np.float32)
+
+
+def extract_feature_set_4(
+    image_bgr: np.ndarray,
+    resize: Optional[Tuple[int, int]] = None,
+    radius: float = 1,
+    n_points: int = 8,
+    method: str = "uniform",
+) -> np.ndarray:
+    """LBP histogram on a resized grayscale image."""
+    image_bgr = _resize_if_needed(image_bgr, resize)
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    points = int(n_points)
+    lbp = local_binary_pattern(gray, points, radius, method=method)
+
+    if method == "uniform":
+        n_bins = points + 2
+    else:
+        n_bins = int(lbp.max() + 1)
+
+    hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins))
+    hist = hist.astype(np.float32)
+    hist /= hist.sum() + 1e-8
+    return hist
 
 
 def _extract_orb_descriptors(image_bgr: np.ndarray, max_features: int) -> np.ndarray:
@@ -157,11 +182,13 @@ def build_feature_matrix(
     hog_params: Optional[dict[str, int | Tuple[int, int]]] = None,
     codebook: Optional[np.ndarray] = None,
     orb_params: Optional[dict[str, int]] = None,
+    lbp_params: Optional[dict[str, int | float | str]] = None,
 ) -> tuple[np.ndarray, list[str]]:
     features = []
     labels = []
     hog_params = hog_params or {}
     orb_params = orb_params or {}
+    lbp_params = lbp_params or {}
     for sample in samples:
         if feature_set == "set1":
             image = load_image(sample.path, resize=resize)
@@ -170,6 +197,11 @@ def build_feature_matrix(
             image = load_image(sample.path, resize=None)
             features.append(
                 extract_feature_set_2(image, resize=resize, **hog_params)
+            )
+        elif feature_set == "set4":
+            image = load_image(sample.path, resize=None)
+            features.append(
+                extract_feature_set_4(image, resize=resize, **lbp_params)
             )
         elif feature_set == "set3":
             if codebook is None:

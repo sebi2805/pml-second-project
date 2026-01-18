@@ -1,5 +1,4 @@
-﻿#!/usr/bin/env bash
-set -euo pipefail
+﻿set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON=""
@@ -36,7 +35,7 @@ run_pipeline() {
 }
 
 pids=()
-for feature_set in set1 set2 set3; do
+for feature_set in set1 set2 set3 set4; do
   run_pipeline "ahc_pipeline.py" "$feature_set" &
   pids+=($!)
   run_pipeline "dbscan_pipeline.py" "$feature_set" &

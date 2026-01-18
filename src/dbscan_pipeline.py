@@ -9,10 +9,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    adjusted_rand_score,
+    fbeta_score,
+    normalized_mutual_info_score,
+    precision_recall_fscore_support,
+)
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
-from cluster_metrics import binary_match_counts, hungarian_match_counts
+from cluster_metrics import (
+    apply_label_mapping,
+    binary_match_counts,
+    hungarian_match_counts,
+    hungarian_match_mapping,
+)
 from data_io import discover_samples
 from features import build_feature_matrix, build_orb_codebook
 
@@ -22,8 +33,9 @@ OUTPUT_DIR = Path("output")
 BINS = 32
 RESIZE = (128, 128)
 DEFAULT_FEATURE_SET = "set2"
-FEATURE_SETS = ("set1", "set2", "set3")
+FEATURE_SETS = ("set1", "set2", "set3", "set4")
 HOG_PARAMS = {"orientations": 9, "pixels_per_cell": (8, 8), "cells_per_block": (2, 2)}
+LBP_PARAMS = {"radius": 1, "n_points": 8, "method": "uniform"}
 BOVW_NUM_WORDS = 64
 BOVW_MAX_FEATURES = 500
 BOVW_MAX_DESCRIPTORS = 10_000
@@ -37,7 +49,7 @@ HEALTHY_LABELS = {"Healthy_Nail"}
 DEFAULT_DBSCAN = {"eps": 0.6, "min_samples": 5, "metric": "euclidean", "bins": BINS}
 GRID_SEARCH = {
     "bins": [16, 32, 64],
-    "eps": np.linspace(0.5, 6, 10),
+    "eps": np.linspace(0.5, 2, 10),
     "min_samples": [3, 5, 8, 12],
     "metric": ["euclidean"],
     "pca_components": [CLUSTER_PCA_COMPONENTS],
@@ -78,6 +90,90 @@ def pca_tag(components: int | None) -> str:
     if components is None:
         return "pcaNone"
     return f"pca{components}"
+
+
+def build_summary_columns(feature_set: str) -> list[str]:
+    columns = [
+        "feature_set",
+        "resize_w",
+        "resize_h",
+        "pca_whiten",
+        "post_pca_standardize",
+    ]
+    if feature_set == "set1":
+        columns.append("bins")
+    elif feature_set == "set2":
+        columns.extend(
+            [
+                "hog_orientations",
+                "hog_pixels_per_cell_w",
+                "hog_pixels_per_cell_h",
+                "hog_cells_per_block_w",
+                "hog_cells_per_block_h",
+            ]
+        )
+    elif feature_set == "set3":
+        columns.extend(
+            [
+                "bovw_num_words",
+                "bovw_max_features",
+                "bovw_max_descriptors",
+                "orb_max_features",
+            ]
+        )
+    elif feature_set == "set4":
+        columns.extend(["lbp_radius", "lbp_n_points", "lbp_method"])
+    else:
+        raise ValueError(f"Unknown feature_set: {feature_set}")
+    return columns
+
+
+def build_summary_prefix(feature_set: str, bins: int) -> list[str]:
+    if RESIZE is None:
+        resize_w = ""
+        resize_h = ""
+    else:
+        resize_w, resize_h = RESIZE
+
+    values = [
+        feature_set,
+        str(resize_w),
+        str(resize_h),
+        str(PCA_WHITEN),
+        str(POST_PCA_STANDARDIZE),
+    ]
+    if feature_set == "set1":
+        values.append(str(bins))
+    elif feature_set == "set2":
+        values.extend(
+            [
+                str(HOG_PARAMS["orientations"]),
+                str(HOG_PARAMS["pixels_per_cell"][0]),
+                str(HOG_PARAMS["pixels_per_cell"][1]),
+                str(HOG_PARAMS["cells_per_block"][0]),
+                str(HOG_PARAMS["cells_per_block"][1]),
+            ]
+        )
+    elif feature_set == "set3":
+        values.extend(
+            [
+                str(BOVW_NUM_WORDS),
+                str(BOVW_MAX_FEATURES),
+                str(BOVW_MAX_DESCRIPTORS),
+                str(BOVW_MAX_FEATURES),
+            ]
+        )
+    elif feature_set == "set4":
+        values.extend(
+            [
+                str(LBP_PARAMS["radius"]),
+                str(LBP_PARAMS["n_points"]),
+                str(LBP_PARAMS["method"]),
+            ]
+        )
+    else:
+        raise ValueError(f"Unknown feature_set: {feature_set}")
+    return values
 
 
 def summarize_labels(labels: np.ndarray) -> tuple[int, int]:
@@ -149,7 +245,7 @@ def parse_args() -> argparse.Namespace:
         "--feature-set",
         choices=FEATURE_SETS,
         default=DEFAULT_FEATURE_SET,
-        help="Feature set to use: set1 (color stats), set2 (HOG), set3 (BoVW).",
+        help="Feature set to use: set1 (color stats), set2 (HOG), set3 (BoVW), set4 (LBP).",
     )
     return parser.parse_args()
 
@@ -239,6 +335,13 @@ def main() -> None:
                 feature_set=feature_set,
                 hog_params=HOG_PARAMS,
             )
+        elif feature_set == "set4":
+            features, labels = build_feature_matrix(
+                samples,
+                resize=RESIZE,
+                feature_set=feature_set,
+                lbp_params=LBP_PARAMS,
+            )
         elif feature_set == "set3":
             if codebook is None:
                 raise RuntimeError("Codebook not initialized for feature_set='set3'.")
@@ -286,11 +389,32 @@ def main() -> None:
         results_path = output_dir / f"dbscan_{SPLIT}_summary.csv"
     else:
         results_path = output_dir / f"dbscan_{SPLIT}_{feature_set}_summary.csv"
-    rows = [
-        "bins,pca_components,eps,min_samples,metric,clusters,noise,noise_ratio,"
-        "accuracy_clustered,coverage,accuracy_overall,"
-        "accuracy_binary_clustered,accuracy_binary_overall\n"
+    summary_columns = build_summary_columns(feature_set)
+    metric_columns = [
+        "pca_components",
+        "eps",
+        "min_samples",
+        "metric",
+        "clusters",
+        "noise",
+        "noise_ratio",
+        "accuracy_clustered",
+        "coverage",
+        "accuracy_overall",
+        "accuracy_binary_clustered",
+        "accuracy_binary_overall",
+        "precision_clustered",
+        "recall_clustered",
+        "f2_clustered",
+        "ari_clustered",
+        "nmi_clustered",
+        "precision_overall",
+        "recall_overall",
+        "f2_overall",
+        "ari_overall",
+        "nmi_overall",
     ]
+    rows = [",".join(summary_columns + metric_columns) + "\n"]
 
     for config in configs:
         bins = int(config["bins"])
@@ -317,8 +441,9 @@ def main() -> None:
         clustered_mask = cluster_labels != -1
         clustered_count = int(np.sum(clustered_mask))
         coverage = clustered_count / total_samples if total_samples else 0.0
+        labels_array = np.asarray(labels)
+        class_labels = sorted(set(labels))
         if clustered_count:
-            labels_array = np.asarray(labels)
             clustered_true = labels_array[clustered_mask]
             clustered_pred = cluster_labels[clustered_mask]
             correct_clustered, _ = hungarian_match_counts(clustered_true, clustered_pred)
@@ -327,15 +452,87 @@ def main() -> None:
             correct_binary, _ = binary_match_counts(clustered_true, clustered_pred, HEALTHY_LABELS)
             accuracy_binary_clustered = correct_binary / clustered_count
             accuracy_binary_overall = correct_binary / total_samples if total_samples else 0.0
+            mapping = hungarian_match_mapping(clustered_true, clustered_pred)
+            mapped_clustered = apply_label_mapping(clustered_pred, mapping, fallback_label="__noise__")
+            mapped_all = apply_label_mapping(cluster_labels, mapping, fallback_label="__noise__")
+            precision_clustered, recall_clustered, _, _ = precision_recall_fscore_support(
+                clustered_true,
+                mapped_clustered,
+                labels=class_labels,
+                average="macro",
+                zero_division=0,
+            )
+            f2_clustered = fbeta_score(
+                clustered_true,
+                mapped_clustered,
+                labels=class_labels,
+                beta=2,
+                average="macro",
+                zero_division=0,
+            )
+            precision_overall, recall_overall, _, _ = precision_recall_fscore_support(
+                labels_array,
+                mapped_all,
+                labels=class_labels,
+                average="macro",
+                zero_division=0,
+            )
+            f2_overall = fbeta_score(
+                labels_array,
+                mapped_all,
+                labels=class_labels,
+                beta=2,
+                average="macro",
+                zero_division=0,
+            )
+            ari_clustered = adjusted_rand_score(clustered_true, clustered_pred)
+            nmi_clustered = normalized_mutual_info_score(clustered_true, clustered_pred)
+            ari_overall = adjusted_rand_score(labels_array, cluster_labels)
+            nmi_overall = normalized_mutual_info_score(labels_array, cluster_labels)
         else:
             accuracy_clustered = 0.0
             accuracy_overall = 0.0
             accuracy_binary_clustered = 0.0
             accuracy_binary_overall = 0.0
+            precision_clustered = 0.0
+            recall_clustered = 0.0
+            f2_clustered = 0.0
+            precision_overall = 0.0
+            recall_overall = 0.0
+            f2_overall = 0.0
+            ari_clustered = 0.0
+            nmi_clustered = 0.0
+            ari_overall = 0.0
+            nmi_overall = 0.0
         rows.append(
-            f"{bins},{pca_components},{eps},{min_samples},{metric},{cluster_count},{noise_count},"
-            f"{noise_ratio:.4f},{accuracy_clustered:.4f},{coverage:.4f},{accuracy_overall:.4f},"
-            f"{accuracy_binary_clustered:.4f},{accuracy_binary_overall:.4f}\n"
+            ",".join(
+                build_summary_prefix(feature_set, bins)
+                + [
+                    str(pca_components),
+                    str(eps),
+                    str(min_samples),
+                    str(metric),
+                    str(cluster_count),
+                    str(noise_count),
+                    f"{noise_ratio:.4f}",
+                    f"{accuracy_clustered:.4f}",
+                    f"{coverage:.4f}",
+                    f"{accuracy_overall:.4f}",
+                    f"{accuracy_binary_clustered:.4f}",
+                    f"{accuracy_binary_overall:.4f}",
+                    f"{precision_clustered:.4f}",
+                    f"{recall_clustered:.4f}",
+                    f"{f2_clustered:.4f}",
+                    f"{ari_clustered:.4f}",
+                    f"{nmi_clustered:.4f}",
+                    f"{precision_overall:.4f}",
+                    f"{recall_overall:.4f}",
+                    f"{f2_overall:.4f}",
+                    f"{ari_overall:.4f}",
+                    f"{nmi_overall:.4f}",
+                ]
+            )
+            + "\n"
         )
         print(f"Saved plot to {output_path}")
 
