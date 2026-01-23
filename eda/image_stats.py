@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import csv
 from collections import defaultdict
@@ -15,7 +13,7 @@ DEFAULT_OUTPUT_DIR = Path("output") / "eda"
 DEFAULT_SPLIT = "train"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate image resolution/aspect ratio histograms and file size summary."
     )
@@ -39,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def summarize_sizes(values: list[int]) -> tuple[int, float, float, int, int]:
+def summarize_sizes(values):
     arr = np.array(values, dtype=np.float64)
     return (
         int(arr.size),
@@ -50,20 +48,24 @@ def summarize_sizes(values: list[int]) -> tuple[int, float, float, int, int]:
     )
 
 
-def main() -> None:
+def main():
     args = parse_args()
     samples = discover_samples(args.data_root, args.split)
     if not samples:
-        raise RuntimeError(f"No samples found under {args.data_root / args.split}")
+        print(f"No samples found under {args.data_root / args.split}")
+        return
 
     widths = []
     heights = []
     areas = []
     ratios = []
-    per_class_sizes: dict[str, list[int]] = defaultdict(list)
+    per_class_sizes = defaultdict(list)
 
     for sample in samples:
         image = load_image(sample.path)
+        if image is None:
+            print(f"Skipping image {sample.path}")
+            continue
         height, width = image.shape[:2]
         widths.append(width)
         heights.append(height)

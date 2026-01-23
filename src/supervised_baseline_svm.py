@@ -1,31 +1,48 @@
-﻿from __future__ import annotations
-
 import argparse
 from pathlib import Path
 
 from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import ParameterGrid
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
 
-from data_io import discover_samples
-from features import build_feature_matrix, build_orb_codebook
+from data_io import gather_images
+from features import build_feature_matrix
 
 DATA_ROOT = Path("data")
 TRAIN_SPLIT = "train"
 VAL_SPLIT = "validation"
-OUTPUT_DIR = Path("output")
 BINS = 32
 RESIZE = (128, 128)
 DEFAULT_FEATURE_SET = "set2"
-FEATURE_SETS = ("set1", "set2", "set3", "set4")
+FEATURE_SETS = ("set1", "set2", "set4")
 HOG_PARAMS = {"orientations": 9, "pixels_per_cell": (8, 8), "cells_per_block": (2, 2)}
 LBP_PARAMS = {"radius": 1, "n_points": 8, "method": "uniform"}
-BOVW_NUM_WORDS = 64
-BOVW_MAX_FEATURES = 500
-BOVW_MAX_DESCRIPTORS = 10_000
+BINARY_POSITIVE_LABELS = {"Healthy_Nail"}
+
+SVM_C = 1.0
+MAX_ITER = 5000
+OUTPUT_CSV = Path("output/supervised_baseline_svm_results.csv")
 
 
-def build_features(samples, feature_set: str, bins: int, codebook):
+# in the spirit of all the other parts i will iterate manually over the grid
+GRID_CONFIG = {
+    "svm": "svc",
+    "params": [
+        {"kernel": ["linear"], "C": [0.1, 1, 10]},
+        {"kernel": ["rbf"], "C": [0.1, 1, 10], "gamma": ["scale", "auto"]},
+        {
+            "kernel": ["poly"],
+            "C": [0.1, 1, 10],
+            "gamma": ["scale"],
+            "degree": [2, 3],
+            "coef0": [0.0, 1.0],
+        },
+    ],
+}
+
+
+def build_features(samples, feature_set, bins):
     if feature_set == "set1":
         features, labels = build_feature_matrix(
             samples, bins=bins, resize=RESIZE, feature_set=feature_set
@@ -44,169 +61,113 @@ def build_features(samples, feature_set: str, bins: int, codebook):
             feature_set=feature_set,
             lbp_params=LBP_PARAMS,
         )
-    elif feature_set == "set3":
-        if codebook is None:
-            raise RuntimeError("Codebook not initialized for feature_set='set3'.")
-        features, labels = build_feature_matrix(
-            samples,
-            resize=RESIZE,
-            feature_set=feature_set,
-            codebook=codebook,
-            orb_params={"max_features": BOVW_MAX_FEATURES},
-        )
-    else:
-        raise ValueError(f"Unknown feature_set: {feature_set}")
-
-    if features.size == 0:
-        raise RuntimeError("Feature extraction returned an empty matrix.")
 
     return features, labels
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Train a supervised SVM baseline on extracted features."
-    )
+def to_binary(labels):
+    binary = []
+    for label in labels:
+        if label in BINARY_POSITIVE_LABELS:
+            binary.append(1)
+        else:
+            binary.append(0)
+    return binary
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "--feature-set",
         choices=FEATURE_SETS,
         default=DEFAULT_FEATURE_SET,
-        help="Feature set to use: set1 (color stats), set2 (HOG), set3 (BoVW), set4 (LBP).",
-    )
-    parser.add_argument(
-        "--c",
-        type=float,
-        default=1.0,
-        help="SVM regularization strength (C).",
-    )
-    parser.add_argument(
-        "--grid-search",
-        action="store_true",
-        help="Run a simple grid search over C values on the validation split.",
-    )
-    parser.add_argument(
-        "--c-grid",
-        type=str,
-        default="0.01,0.1,1,10,100",
-        help="Comma-separated C values for grid search.",
-    )
-    parser.add_argument(
-        "--max-iter",
-        type=int,
-        default=5000,
-        help="Maximum iterations for LinearSVC.",
-    )
-    parser.add_argument(
-        "--output-csv",
-        type=Path,
-        default=None,
-        help="Optional path to write metrics as a single-row CSV.",
     )
     return parser.parse_args()
 
 
-def main() -> None:
+def main():
     args = parse_args()
 
-    train_samples = discover_samples(DATA_ROOT, TRAIN_SPLIT)
-    val_samples = discover_samples(DATA_ROOT, VAL_SPLIT)
-    if not train_samples:
-        raise RuntimeError(f"No samples found under {DATA_ROOT / TRAIN_SPLIT}")
-    if not val_samples:
-        raise RuntimeError(f"No samples found under {DATA_ROOT / VAL_SPLIT}")
+    train_samples = gather_images(DATA_ROOT, TRAIN_SPLIT)
+    val_samples = gather_images(DATA_ROOT, VAL_SPLIT)
 
-    codebook = None
-    if args.feature_set == "set3":
-        codebook = build_orb_codebook(
-            train_samples,
-            num_words=BOVW_NUM_WORDS,
-            max_features=BOVW_MAX_FEATURES,
-            max_descriptors=BOVW_MAX_DESCRIPTORS,
-            resize=RESIZE,
-        )
+    x_train, y_train = build_features(train_samples, args.feature_set, BINS)
+    x_val, y_val = build_features(val_samples, args.feature_set, BINS)
 
-    x_train, y_train = build_features(train_samples, args.feature_set, BINS, codebook)
-    x_val, y_val = build_features(val_samples, args.feature_set, BINS, codebook)
-
+    # i ddint apply pca here because svm can handle high dimensional data pretty well
     scaler = StandardScaler()
     x_train = scaler.fit_transform(x_train)
     x_val = scaler.transform(x_val)
 
-    if args.grid_search:
-        c_values = [value.strip() for value in args.c_grid.split(",") if value.strip()]
-        if not c_values:
-            raise ValueError("c_grid must include at least one value.")
-        c_values_float = []
-        for value in c_values:
-            try:
-                c_values_float.append(float(value))
-            except ValueError as exc:
-                raise ValueError(f"Invalid C value: {value}") from exc
+    results = []
+    best = None
+    grid_config = GRID_CONFIG
+    param_grid = grid_config["params"]
 
-        results = []
-        best = None
-        for c_value in c_values_float:
-            clf = LinearSVC(C=c_value, max_iter=args.max_iter)
-            clf.fit(x_train, y_train)
-            preds = clf.predict(x_val)
-            acc = accuracy_score(y_val, preds)
-            f1_macro = f1_score(y_val, preds, average="macro")
-            results.append((c_value, acc, f1_macro))
-            if best is None or f1_macro > best[2]:
-                best = (c_value, acc, f1_macro)
-
-        if best is None:
-            raise RuntimeError("Grid search failed to evaluate any C values.")
-
-        best_c, best_acc, best_f1 = best
-        print(
-            "SVM grid search (LinearSVC) "
-            f"feature_set={args.feature_set} "
-            f"best_c={best_c} best_acc={best_acc:.4f} best_f1_macro={best_f1:.4f} "
-            f"train={len(y_train)} val={len(y_val)}"
+    for params in ParameterGrid(param_grid):
+        model = SVC(
+            C=params.get("C", 1.0),
+            kernel=params.get("kernel", "rbf"),
+            gamma=params.get("gamma", "scale"),
+            degree=params.get("degree", 3),
+            coef0=params.get("coef0", 0.0),
+            max_iter=MAX_ITER,
         )
-        print("c,acc,f1_macro")
-        for c_value, acc, f1_macro in results:
-            print(f"{c_value},{acc:.4f},{f1_macro:.4f}")
+        row = {
+            "svm": "svc",
+            "kernel": params.get("kernel", "rbf"),
+            "c": params.get("C", 1.0),
+            "gamma": params.get("gamma"),
+            "degree": params.get("degree"),
+            "coef0": params.get("coef0"),
+            "loss": None,
+        }
 
-        if args.output_csv is not None:
-            output_path = args.output_csv
-            if output_path.parent:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-            rows = ["feature_set,c,max_iter,acc,f1_macro,train_samples,val_samples,is_best\n"]
-            for c_value, acc, f1_macro in results:
-                is_best = c_value == best_c
-                rows.append(
-                    f"{args.feature_set},{c_value},{args.max_iter},{acc:.6f},{f1_macro:.6f},"
-                    f"{len(y_train)},{len(y_val)},{int(is_best)}\n"
-                )
-            output_path.write_text("".join(rows), encoding="utf-8")
-            print(f"Saved supervised baseline grid results to {output_path}")
-    else:
-        clf = LinearSVC(C=args.c, max_iter=args.max_iter)
-        clf.fit(x_train, y_train)
+        model.fit(x_train, y_train)
+        preds = model.predict(x_val)
 
-        preds = clf.predict(x_val)
         acc = accuracy_score(y_val, preds)
         f1_macro = f1_score(y_val, preds, average="macro")
 
-        print(
-            "SVM baseline (LinearSVC) "
-            f"feature_set={args.feature_set} "
-            f"acc={acc:.4f} f1_macro={f1_macro:.4f} "
-            f"train={len(y_train)} val={len(y_val)}"
-        )
+        # here i want to map the classes in binary
+        binary_acc = accuracy_score(to_binary(y_val), to_binary(list(preds)))
 
-        if args.output_csv is not None:
-            output_path = args.output_csv
-            if output_path.parent:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(
-                "feature_set,acc,f1_macro,train_samples,val_samples\n"
-                f"{args.feature_set},{acc:.6f},{f1_macro:.6f},{len(y_train)},{len(y_val)}\n",
-                encoding="utf-8",
-            )
-            print(f"Saved supervised baseline metrics to {output_path}")
+        row["acc"] = acc
+        row["f1_macro"] = f1_macro
+        row["binary_acc"] = binary_acc
+        results.append(row)
+
+        # i want to improve g1, i could improve accuracy but the datasets is not really balanced
+        if best is None or f1_macro > best["f1_macro"]:
+            best = row
+
+    print("vest SVM configuration:")
+    print(best)
+
+    output_path = OUTPUT_CSV
+    if output_path.parent:
+        output_path.parent.mkdir(exist_ok=True)
+    rows = [
+        "feature_set,svm,kernel,c,gamma,degree,coef0,loss,max_iter,acc,f1_macro,"
+        "binary_acc,binary_positive_labels,train_samples,val_samples,is_best\n"
+    ]
+    for row in results:
+        is_best = row is best
+        gamma_value = row["gamma"]
+        degree_value = row["degree"]
+        coef0_value = row["coef0"]
+        loss_value = row["loss"]
+        rows.append(
+            f"{args.feature_set},{row['svm']},{row['kernel']},{row['c']},"
+            f"{gamma_value},"
+            f"{degree_value},"
+            f"{coef0_value},"
+            f"{loss_value},"
+            f"{MAX_ITER},{row['acc']:.6f},{row['f1_macro']:.6f},"
+            f"{row['binary_acc']:.6f},{'|'.join(sorted(BINARY_POSITIVE_LABELS))},"
+            f"{len(y_train)},{len(y_val)},{int(is_best)}\n"
+        )
+    output_path.write_text("".join(rows), encoding="utf-8")
 
 
 if __name__ == "__main__":

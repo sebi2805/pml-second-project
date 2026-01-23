@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import csv
 from collections import defaultdict
@@ -21,7 +19,7 @@ DEFAULT_POINTS = 8
 DEFAULT_METHOD = "uniform"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Compute mean LBP histograms per class and compare them."
     )
@@ -77,17 +75,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def lbp_num_bins(n_points: int, method: str) -> int:
+def lbp_num_bins(n_points, method):
     if method == "uniform":
         return n_points + 2
     if method in ("default", "ror"):
         return 2**n_points
-    raise ValueError(f"Unsupported LBP method: {method}")
+    print(f"Unsupported LBP method {method}")
+    return 0
 
 
 def compute_lbp_hist(
-    image_bgr: np.ndarray, n_points: int, radius: float, method: str, n_bins: int
-) -> np.ndarray:
+    image_bgr, n_points, radius, method, n_bins
+):
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     lbp = local_binary_pattern(gray, n_points, radius, method=method)
     hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins))
@@ -96,27 +95,30 @@ def compute_lbp_hist(
     return hist
 
 
-def euclidean_distance(a: np.ndarray, b: np.ndarray) -> float:
+def euclidean_distance(a, b):
     return float(np.linalg.norm(a - b))
 
 
-def main() -> None:
+def main():
     args = parse_args()
     samples = discover_samples(args.data_root, args.split)
     if not samples:
-        raise RuntimeError(f"No samples found under {args.data_root / args.split}")
+        print(f"No samples found under {args.data_root / args.split}")
+        return
 
     resize = tuple(args.resize)
     n_bins = lbp_num_bins(args.n_points, args.method)
+    if n_bins <= 0:
+        return
 
-    per_class_samples: dict[str, list[Path]] = defaultdict(list)
+    per_class_samples = defaultdict(list)
     for sample in samples:
         per_class_samples[sample.label].append(sample.path)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    lbp_means: dict[str, np.ndarray] = {}
-    counts: dict[str, int] = {}
+    lbp_means = {}
+    counts = {}
     for label in sorted(per_class_samples):
         paths = per_class_samples[label]
         if args.max_images_per_class > 0:
@@ -126,6 +128,9 @@ def main() -> None:
         count = 0
         for path in paths:
             image = load_image(path, resize=resize)
+            if image is None:
+                print(f"Skipping image {path}")
+                continue
             hist = compute_lbp_hist(
                 image, n_points=args.n_points, radius=args.radius, method=args.method, n_bins=n_bins
             )
@@ -138,7 +143,8 @@ def main() -> None:
         counts[label] = count
 
     if not lbp_means:
-        raise RuntimeError("No LBP histograms were computed. Check image sizes and params.")
+        print("No LBP histograms were computed check image sizes and params")
+        return
 
     labels_sorted = sorted(lbp_means)
 

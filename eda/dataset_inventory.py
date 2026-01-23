@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import csv
 from collections import Counter
@@ -12,7 +10,7 @@ DEFAULT_OUTPUT_DIR = Path("output") / "eda"
 DEFAULT_HEALTHY_LABELS = {"Healthy_Nail"}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Create a dataset inventory CSV with per-class and binary counts."
     )
@@ -43,18 +41,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_splits(data_root: Path, splits: list[str] | None) -> list[str]:
+def discover_splits(data_root, splits):
     if splits:
         return splits
     return sorted([path.name for path in data_root.iterdir() if path.is_dir()])
 
 
-def main() -> None:
+def main():
     args = parse_args()
     healthy_labels = set(args.healthy_labels)
     splits = discover_splits(args.data_root, args.splits)
     if not splits:
-        raise RuntimeError(f"No split directories found under {args.data_root}.")
+        print(f"No split directories found under {args.data_root}")
+        return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output_path = args.output_dir / "dataset_inventory.csv"

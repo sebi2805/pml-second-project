@@ -6,7 +6,7 @@ Ideas
 - Dataset inventory: counts per class and split; class imbalance ratios.
 - Image stats: resolution distribution, aspect ratios, file sizes.
 - Color stats: per-class mean/std (RGB), histograms.
-- Feature quality: PCA/TSNE plots for feature sets (set1/set2/set3).
+- Feature quality: PCA/TSNE plots for feature sets (set1/set2/set4).
 - Nearest neighbors: sample-level similarity to spot duplicates/outliers.
 - Binary view: healthy vs non-healthy counts and example grids.
 - Cluster sanity checks: purity/entropy vs features; inspect cluster sample grids.

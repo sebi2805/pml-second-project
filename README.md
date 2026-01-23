@@ -67,12 +67,6 @@ Each subfolder contains images related to the specific nail condition.
 - Compute HOG (cell size / orientations tunable).
 - Rationale: nails have edge/shape cues and are more robust to lighting.
 
-### Feature Set 3: Bag of Visual Words (Local Keypoints + Histogram)
-- Extract ORB (safe, no patent issues) or SIFT (if available).
-- Build a codebook with KMeans on descriptors (train set only).
-- Represent each image by a histogram of visual words.
-- Rationale: captures local patterns (spots, pits, irregularities) differently than global HOG.
-
 ### Feature Set 4: Local Binary Pattern (LBP)
 - Compute LBP on grayscale images (uniform patterns).
 - Build a normalized histogram of LBP codes.

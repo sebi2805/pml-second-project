@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import csv
 from collections import defaultdict
@@ -20,7 +18,7 @@ DEFAULT_PIXELS_PER_CELL = (8, 8)
 DEFAULT_CELLS_PER_BLOCK = (2, 2)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Compute mean HOG descriptors per class and compare them."
     )
@@ -86,27 +84,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def euclidean_distance(a: np.ndarray, b: np.ndarray) -> float:
+def euclidean_distance(a, b):
     return float(np.linalg.norm(a - b))
 
 
-def main() -> None:
+def main():
     args = parse_args()
     samples = discover_samples(args.data_root, args.split)
     if not samples:
-        raise RuntimeError(f"No samples found under {args.data_root / args.split}")
+        print(f"No samples found under {args.data_root / args.split}")
+        return
 
     resize = tuple(args.resize)
     pixels_per_cell = tuple(args.pixels_per_cell)
     cells_per_block = tuple(args.cells_per_block)
 
-    per_class_samples: dict[str, list[Path]] = defaultdict(list)
+    per_class_samples = defaultdict(list)
     for sample in samples:
         per_class_samples[sample.label].append(sample.path)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    hog_means: dict[str, np.ndarray] = {}
+    hog_means = {}
     skipped = 0
     for label in sorted(per_class_samples):
         paths = per_class_samples[label]
@@ -117,6 +116,10 @@ def main() -> None:
         count = 0
         for path in paths:
             image = load_image(path, resize=resize)
+            if image is None:
+                print(f"Skipping image {path}")
+                skipped += 1
+                continue
             desc = extract_feature_set_2(
                 image,
                 resize=None,
@@ -130,10 +133,12 @@ def main() -> None:
             if sum_desc is None:
                 sum_desc = np.zeros_like(desc, dtype=np.float64)
             elif sum_desc.shape != desc.shape:
-                raise ValueError(
-                    f"HOG descriptor size mismatch for label '{label}': "
-                    f"{sum_desc.shape} vs {desc.shape}"
+                print(
+                    f"HOG descriptor size mismatch for label {label} "
+                    f"expected {sum_desc.shape} got {desc.shape}"
                 )
+                skipped += 1
+                continue
             sum_desc += desc
             count += 1
 
@@ -142,7 +147,8 @@ def main() -> None:
         hog_means[label] = (sum_desc / count).astype(np.float64)
 
     if not hog_means:
-        raise RuntimeError("No HOG descriptors were computed. Check image sizes and params.")
+        print("No HOG descriptors were computed check image sizes and params")
+        return
 
     labels_sorted = sorted(hog_means)
     dim = int(next(iter(hog_means.values())).shape[0])
@@ -198,7 +204,7 @@ def main() -> None:
     print(f"Wrote HOG distance matrix to {dist_path}")
     print(f"Wrote HOG overlay plot to {args.output_dir / f'hog_overlay_{args.split}.png'}")
     if skipped:
-        print(f"Skipped {skipped} images with empty HOG descriptors.")
+        print(f"Skipped {skipped} images with empty HOG descriptors")
 
 
 if __name__ == "__main__":
