@@ -20,8 +20,7 @@ HOG_PARAMS = {"orientations": 9, "pixels_per_cell": (8, 8), "cells_per_block": (
 LBP_PARAMS = {"radius": 1, "n_points": 8, "method": "uniform"}
 BINARY_POSITIVE_LABELS = {"Healthy_Nail"}
 
-SVM_C = 1.0
-MAX_ITER = 5000
+MAX_ITER = 100
 OUTPUT_CSV = Path("output/supervised_baseline_svm_results.csv")
 
 
@@ -31,6 +30,7 @@ GRID_CONFIG = {
     "params": [
         {"kernel": ["linear"], "C": [0.1, 1, 10]},
         {"kernel": ["rbf"], "C": [0.1, 1, 10], "gamma": ["scale", "auto"]},
+        # the poly one is most expensive in terms of time, you might want to comment it out
         {
             "kernel": ["poly"],
             "C": [0.1, 1, 10],
@@ -136,12 +136,13 @@ def main():
         row["f1_macro"] = f1_macro
         row["binary_acc"] = binary_acc
         results.append(row)
-
+        print(row)
+        
         # i want to improve g1, i could improve accuracy but the datasets is not really balanced
         if best is None or f1_macro > best["f1_macro"]:
             best = row
 
-    print("vest SVM configuration:")
+    print("best svm configuration")
     print(best)
 
     output_path = OUTPUT_CSV

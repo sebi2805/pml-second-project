@@ -39,12 +39,9 @@ def extract_feature_set_2(
 
     win_w = (width // cell_w) * cell_w
     win_h = (height // cell_h) * cell_h
-    if win_w == 0 or win_h == 0:
-        return np.empty((0,), dtype=np.float32)
 
     block_size = (block_w * cell_w, block_h * cell_h)
-    if block_size[0] > win_w or block_size[1] > win_h:
-        return np.empty((0,), dtype=np.float32)
+
 
     gray = gray[:win_h, :win_w]
     block_stride = (cell_w, cell_h)
@@ -52,8 +49,6 @@ def extract_feature_set_2(
         (win_w, win_h), block_size, block_stride, (cell_w, cell_h), orientations
     )
     descriptors = hog.compute(gray)
-    if descriptors is None:
-        return np.empty((0,), dtype=np.float32)
 
     return descriptors.reshape(-1).astype(np.float32)
 
@@ -70,12 +65,7 @@ def extract_feature_set_4(
     points = n_points
     lbp = local_binary_pattern(gray, points, radius, method=method)
 
-    if method == "uniform":
-        n_bins = points + 2
-    else:
-        n_bins = int(lbp.max() + 1)
-
-    hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins))
+    hist, _ = np.histogram(lbp.flatten(), bins=points + 2, range=(0, points + 2))
     hist = hist.astype(np.float32)
     hist /= hist.sum() + 1e-8
     return hist
@@ -91,8 +81,8 @@ def build_feature_matrix(
 ):
     features = []
     labels = []
-    hog_params = hog_params or {}
-    lbp_params = lbp_params or {}
+
+    # we build the X and y based on samples
     for sample in samples:
         if feature_set == "set1":
             image = load_image(sample["path"], resize=resize)

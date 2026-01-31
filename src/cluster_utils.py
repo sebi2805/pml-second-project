@@ -7,6 +7,9 @@ from sklearn.preprocessing import StandardScaler
 
 from features import build_feature_matrix
 
+# the code is split in building the header, the values 
+# building the freq of classes in a cluster and then some util functions as the entropy
+
 
 def build_summary_columns(feature_set):
     # im building the csv header and in the end the header length should match the row length
@@ -118,6 +121,7 @@ def plot_clusters(x_2d, labels, output_path, title, noise_label=None):
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
 
+    # for dbscan it was getting messy with too many clusters
     if num_labels <= 15:
         ax.legend()
 
@@ -127,6 +131,15 @@ def plot_clusters(x_2d, labels, output_path, title, noise_label=None):
 
 
 def reduce_for_clustering(features_scaled, components, random_state=42):
+    max_components = min(features_scaled.shape[0], features_scaled.shape[1])
+
+    # in case i build too less features with HOG i want to make sure that the oca does not try to scale up
+    if components is None:
+        components = max_components
+    else:
+        components = min(components, max_components)
+    if components < 1:
+        components = 1
     pca = PCA(
         n_components=components,
         random_state=random_state,
@@ -163,7 +176,7 @@ def build_cluster_features(
     hog_params,
     lbp_params,
     pca_components,
-    # lbp handles it well
+    # lbp handles it well without postscaling
     post_scale_feature_sets=("set1", "set2"),
 ):
     features, labels = build_features(

@@ -11,6 +11,9 @@ DEFAULT_SEED = 2805
 HEALTHY_LABELS = {"Healthy_Nail"}
 
 
+# we could run the random only once, but then the results would be less stable
+# thats why i run it for multiple times and take the mean
+
 def binary_accuracy(y_true, y_pred, healthy_labels):
     healthy_list = list(healthy_labels)
     true_healthy = np.isin(y_true, healthy_list)
@@ -20,6 +23,7 @@ def binary_accuracy(y_true, y_pred, healthy_labels):
 
 
 def run_random_class_baseline(split, runs, seed):
+    # i dont want to upload the images in memory bcs i only need the label
     samples = gather_images(DATA_ROOT, split)
 
     labels_list = []
@@ -45,8 +49,8 @@ def run_random_class_baseline(split, runs, seed):
     overall_mean = np.mean(overall_accs)
     binary_mean = np.mean(binary_accs)
 
-    print(f"overall_accuracy_mean {overall_mean:.4f}")
-    print(f"binary_accuracy_mean {binary_mean:.4f}")
+    print(f"overall accuracy mean {overall_mean:.4f}")
+    print(f"binary accuracy mean {binary_mean:.4f}")
 
 
 def main():

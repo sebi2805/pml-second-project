@@ -1,3 +1,6 @@
+# the overall strategy is too choose the most common label inside each predicted cluster
+
+
 def majority_vote_mapping(labels_true, labels_pred):
     y_true = list(labels_true)
     y_pred = list(labels_pred)
@@ -74,7 +77,8 @@ def binary_match_counts(labels_true, labels_pred, positive_labels):
 
     cluster_counts = {}
 
-    # for the binary case, create 2 bins: [negative, positive]
+    # for the binary case, create 2 bins [negative, positive]
+    # sometimes we filter the noise in the dbscane, thats wth this additional step
     min_len = min(len(y_true), len(y_pred))
     for i in range(min_len):
         true_label = y_true[i]
